@@ -1,0 +1,95 @@
+{
+    "version": 1,
+    "author": "Anh Đỗ Tân Ngọc",
+    "editor": "wokwi",
+    "parts": [
+        {
+            "type": "wokwi-breadboard-half",
+            "id": "bb1",
+            "top": 227.4,
+            "left": -390.8,
+            "attrs": {}
+        },
+        {
+            "type": "board-esp32-devkit-c-v4",
+            "id": "esp",
+            "top": 96,
+            "left": 14.44,
+            "attrs": {}
+        },
+        {
+            "type": "wokwi-pir-motion-sensor",
+            "id": "pir2",
+            "top": -92,
+            "left": -256.98,
+            "attrs": {}
+        },
+        {
+            "type": "wokwi-buzzer",
+            "id": "bz1",
+            "top": -55.2,
+            "left": -142.2,
+            "attrs": { "volume": "0.1" }
+        },
+        {
+            "type": "wokwi-slide-switch",
+            "id": "sw1",
+            "top": -14.8,
+            "left": -515.3,
+            "attrs": {}
+        },
+        {
+            "type": "wokwi-stepper-motor",
+            "id": "stepper1",
+            "top": -15.59,
+            "left": -450.77,
+            "attrs": { "size": "17", "arrow": "orange" }
+        },
+        {
+            "type": "wokwi-membrane-keypad",
+            "id": "keypad1",
+            "top": -146,
+            "left": 211.5,
+            "attrs": { "columns": "3" }
+        },
+        {
+            "type": "wokwi-lcd1602",
+            "id": "lcd1",
+            "top": -243.2,
+            "left": -80.8,
+            "attrs": { "pins": "i2c" }
+        }
+    ],
+    "connections": [
+        ["esp:TX", "$serialMonitor:RX", "", []],
+        ["esp:RX", "$serialMonitor:TX", "", []],
+        ["esp:5V", "bb1:tp.25", "red", ["h-47.85", "v38.4"]],
+        ["esp:GND.1", "bb1:tn.25", "black", ["h-57.45", "v9.6"]],
+        ["pir2:VCC", "bb1:tp.13", "red", ["v0"]],
+        ["pir2:GND", "bb1:tn.15", "black", ["v0"]],
+        ["pir2:OUT", "esp:26", "green", ["v0"]],
+        ["bz1:1", "bb1:tn.22", "green", ["v0"]],
+        ["bz1:2", "esp:25", "green", ["v0"]],
+        ["stepper1:A-", "esp:33", "green", ["v0"]],
+        ["stepper1:A+", "esp:32", "green", ["v0"]],
+        ["stepper1:B+", "esp:35", "green", ["v0"]],
+        ["esp:34", "stepper1:B-", "green", ["h0"]],
+        ["lcd1:GND", "bb1:tn.18", "black", ["h-86.4", "v326.4"]],
+        ["lcd1:VCC", "bb1:tp.19", "red", ["h-76.8", "v441.7"]],
+        ["lcd1:SDA", "esp:21", "green", ["h-28.8", "v105.8", "h288", "v268.8"]],
+        [
+            "esp:22",
+            "lcd1:SCL",
+            "green",
+            ["h38.4", "v-220.8", "h-249.6", "v-105.6"]
+        ],
+        ["keypad1:R1", "esp:15", "green", ["v0"]],
+        ["keypad1:R2", "esp:2", "green", ["v0"]],
+        ["esp:0", "keypad1:R3", "green", ["h0"]],
+        ["keypad1:R4", "esp:4", "green", ["v0"]],
+        ["esp:16", "keypad1:C1", "green", ["h0"]],
+        ["keypad1:C2", "esp:17", "green", ["v0"]],
+        ["esp:5", "keypad1:C3", "green", ["h0"]]
+    ],
+    "dependencies": {}
+}
