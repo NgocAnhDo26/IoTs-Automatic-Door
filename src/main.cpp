@@ -1,20 +1,24 @@
-// #include <Stepper.h>
 #include <Arduino.h>
 #include <PubSubClient.h>
 #include <WiFi.h>
 #include <Wire.h>
 #include <Keypad.h>
 #include <LiquidCrystal_I2C.h>
+#include <Stepper.h>
+#include <Adafruit_Sensor.h>
+#include <DHT.h>
 
 // -------- Pins --------
-#define PIR_PIN_1 26
-#define PIR_PIN_2 27
-#define LED_PIN 18
-#define BUZZER_PIN 25
-#define FLAME_PIN 1
-#define LIGHT_SENSOR_PIN 1
-#define EMERGENCY_BUTTON 1
-#define SLIDE_SWITCH 1
+#define PIR_PIN_1 34
+#define PIR_PIN_2 35
+#define LED_PIN 14
+#define BUZZER_PIN 12
+#define FLAME_PIN 13
+#define LIGHT_SENSOR_PIN 27
+#define EMERGENCY_BUTTON 18
+#define ULTRA_SONIC_TRIG 23
+#define ULTRA_SONIC_ECHO 19
+#define SLIDE_SWITCH RX
 
 const uint8_t NUMPAD_ROWS = 4;
 const uint8_t NUMPAD_COLS = 3;
@@ -27,17 +31,36 @@ char keys[NUMPAD_ROWS][NUMPAD_COLS] = {
 uint8_t colPins[NUMPAD_COLS] = {16, 17, 5};
 uint8_t rowPins[NUMPAD_ROWS] = {15, 2, 0, 4};
 
-char doorPassword[4] = {'2', '2', '2', '2'};
+char doorPassword[4] = {'1', '2', '3', '4'};
 char enteredPass[4] = {' ', ' ', ' ', ' '};
 
+const int stepsPerRevolution = 200;
+
 // -------- Boolean Flags --------
-bool safetyMode = false;
 bool enterPassComplete = false;
-bool doorIsOpeningClosing = false;
-bool openDoorCommand = false;
-bool closeDoorCommand = false;
+bool openDoorKeyPad = false;
 bool safetyLock = false;
+bool fireDetected = false;
+bool lightDetected = false;
+
+bool safetyMode = true;
 bool lightAlwaysOn = false;
+bool doorAlwaysOpen = false;
+bool openDoorFromWeb = false;
+
+// -------- Topic --------
+const char *t_doorIsClosed = "/22127010/flag/doorIsClosed";
+const char *t_doorLight = "/22127303/flag/doorLight";
+const char *t_peopleDetected = "/22127010/flag/peopleDetected";
+const char *t_fireSensor = "/22127303/flag/fireSensor";
+const char *t_restartRequest = "/22127010/flag/restartRequest";
+const char *t_alert = "/22127010/flag/alert";
+
+const char *t_safetyMode = "/22127010/flag/safetyMode";
+const char *t_openDoorWeb = "/22127010/flag/openDoorWeb";
+const char *t_alwaysOpen = "/22127010/flag/alwaysOpen";
+const char *t_alwaysLightOn = "/22127010/flag/alwaysLightOn";
+const char *t_doorPassword = "/22127303/flag/doorPassword";
 
 // -------- Functions declaration --------
 void enterPassword(int &i);
@@ -49,6 +72,12 @@ void wifiConnect();
 
 void mqttConnect();
 void callback(char *, byte *, unsigned int);
+void publishTopic(const char *topic, int message);
+void publishTopic(const char *topic, String message);
+
+void openDoor();
+void closeDoor();
+long ultraSonicDistance();
 
 // Wifi
 const char *ssid = "Wokwi-GUEST";
@@ -57,162 +86,211 @@ WiFiClient wifiClient;
 PubSubClient mqttClient(wifiClient);
 
 // MQQT Server
-const char *mqttServer = "broker.hivemq.com";
+const char *mqttServer = "test.mosquitto.org";
 int port = 1883;
 
 // Init devices
 Keypad keypad = Keypad(makeKeymap(keys), rowPins, colPins, NUMPAD_ROWS, NUMPAD_COLS);
 LiquidCrystal_I2C lcd(0x27, 16, 2);
+Stepper myStepper(stepsPerRevolution, 26, 25, 33, 32);
+DHT dht(FLAME_PIN, DHT22);
 
 void setup()
 {
   Serial.begin(115200);
   pinMode(PIR_PIN_1, INPUT);
-  pinMode(BUZZER_PIN, OUTPUT);
-  pinMode(LIGHT_SENSOR_PIN, INPUT);
+  pinMode(PIR_PIN_2, INPUT);
   pinMode(LED_PIN, OUTPUT);
+  pinMode(BUZZER_PIN, OUTPUT);
+  pinMode(FLAME_PIN, INPUT);
+  pinMode(LIGHT_SENSOR_PIN, INPUT);
+  pinMode(EMERGENCY_BUTTON, INPUT);
+  pinMode(SLIDE_SWITCH, INPUT);
+  pinMode(ULTRA_SONIC_TRIG, OUTPUT);
+  pinMode(ULTRA_SONIC_ECHO, INPUT);
 
   lcd.init(); // initialize the lcd
-  // myStepper.setSpeed(30);
+  myStepper.setSpeed(30);
+
+  wifiConnect();
+  mqttClient.setServer(mqttServer, port);
+  mqttClient.setCallback(callback);
+  mqttClient.setKeepAlive(90);
+
+  mqttConnect();
+  publishTopic(t_restartRequest, "true");
+  delay(3000);
 }
 
 // ------- Variables for 'loop' function --------
-int i = 0;
+int i = -1;
 int numberOfIncorrect = 0;
 bool doorIsClosed = true;
-long startLock;
+bool switchDoorAlwaysOpen = false;
+bool fire = false;
+int countFire = 0;
+unsigned long startLock;
+unsigned long fireDuration = 0;
 
 void loop()
 {
   int PIR1, PIR2;
-  // if (!mqttClient.connected())
-  //   mqttConnect();
+  if (!mqttClient.connected())
+    mqttConnect();
 
-  // mqttClient.loop();
+  mqttClient.loop();
 
-  // // Publish data to MQTT Server
-  // int temp = random(0, 100);
-  // char buffer[50];
-  // sprintf(buffer, "%d", temp);
-  // mqttClient.publish("/12345/temp", buffer);
+  PIR1 = digitalRead(PIR_PIN_1);
+  PIR2 = digitalRead(PIR_PIN_2);
+  if (PIR1 || PIR2)
+  {
+    publishTopic(t_peopleDetected, "TRUE");
+  }
+  else
+    publishTopic(t_peopleDetected, "FALSE");
 
-  // delay(5000);
-
-  // bool status = digitalRead(PIR_pin_1);
   // LED Light
   if (!lightAlwaysOn)
   {
-    bool lightSensor = analogRead(LIGHT_SENSOR_PIN);
-    if (lightSensor > 50)
+    bool lightSensor = digitalRead(LIGHT_SENSOR_PIN);
+    if (lightSensor)
     {
       digitalWrite(LED_PIN, HIGH);
+      publishTopic(t_doorLight, "ON");
     }
     else
     {
       digitalWrite(LED_PIN, LOW);
+      publishTopic(t_doorLight, "OFF");
     }
   }
   else
   {
     digitalWrite(LED_PIN, HIGH);
+    publishTopic(t_doorLight, "ON");
   }
 
   // Flame detection
-  bool flameDetected = digitalRead(FLAME_PIN);
-  if (flameDetected)
+  float temp = dht.readTemperature();
+  if (temp > 30)
   {
+    countFire++;
+    if (countFire == 1)
+      publishTopic(t_fireSensor, "FIRE!!!");
+    fire = true;
+
     if (doorIsClosed)
+      openDoor();
+  }
+  else
+  {
+    publishTopic(t_fireSensor, "SAFE");
+    countFire = 0;
+    fire = false;
+  }
+
+  // Slide switch door always open
+  switchDoorAlwaysOpen = digitalRead(SLIDE_SWITCH);
+
+  // Check for door always open mode
+  if (!doorAlwaysOpen && !switchDoorAlwaysOpen)
+  {
+    if (!doorIsClosed && !fire)
     {
-      // openDoor();
-      doorIsClosed = false;
+      PIR1 = digitalRead(PIR_PIN_1);
+      PIR2 = digitalRead(PIR_PIN_2);
+      if (!PIR1 && !PIR2)
+      {
+        closeDoor();
+      }
+    }
+
+    if (openDoorFromWeb || digitalRead(EMERGENCY_BUTTON)) 
+      openDoor();
+
+    // Nếu bật (safetyMode) và không đang mở/đang đóng cửa
+    if (!safetyLock)
+    {
+      if (safetyMode)
+      {
+        if (numberOfIncorrect == 3)
+        {
+          lcd.backlight();
+          lcd.setCursor(0, 0);
+          lcd.print("Wrong 3 times!");
+          lcd.setCursor(0, 1);
+          lcd.print("3 mins locked");
+
+          publishTopic(t_alert, "true");
+          playAlertSound();
+
+          numberOfIncorrect = 0;
+          // lock the door for 3 mins
+          startLock = millis();
+          safetyLock = true;
+        }
+
+        if (doorIsClosed)
+          enterPassword(i);
+        else
+          lcd.noBacklight();
+
+        if (openDoorKeyPad)
+        {
+          if (doorIsClosed)
+          {
+            openDoor();
+            delay(1500);
+          }
+
+          // Check if there are people before closing
+          PIR1 = digitalRead(PIR_PIN_1);
+          PIR2 = digitalRead(PIR_PIN_2);
+          if (!PIR1 && !PIR2)
+          {
+            publishTopic(t_peopleDetected, "FALSE");
+            closeDoor();
+            openDoorKeyPad = false;
+          }
+        }
+      }
+      // Chế độ bình thường
+      else
+      {
+        lcd.clear();
+        lcd.noBacklight();
+
+        PIR1 = digitalRead(PIR_PIN_1);
+        PIR2 = digitalRead(PIR_PIN_2);
+
+        if (doorIsClosed)
+        {
+          if (PIR1 || PIR2)
+          {
+            publishTopic(t_peopleDetected, "TRUE");
+            openDoor();
+          }
+        }
+        else if (!PIR1 && !PIR2)
+        {
+          publishTopic(t_peopleDetected, "FALSE");
+          closeDoor();
+        }
+      }
+    }
+    else if (millis() - startLock >= 3000)
+    {
+      safetyLock = false;
+      lcd.clear();
+      lcd.noBacklight();
+      publishTopic(t_alert, "false");
     }
   }
   else
   {
-    if (!doorIsClosed)
-    {
-      PIR1 = digitalRead(PIR_PIN_1);
-      PIR2 = digitalRead(PIR_PIN_2);
-
-      if (!PIR1 && !PIR2)
-      {
-        // closeDoor();
-        doorIsClosed = true;
-      }
-    }
+    if (doorIsClosed)
+      openDoor();
   }
-
-  // Nếu bật (safetyMode) và không đang mở/đang đóng cửa
-  if (!safetyLock)
-  {
-    if (safetyMode)
-    {
-      if (numberOfIncorrect == 3)
-      {
-        playAlertSound();
-        numberOfIncorrect = 0;
-        // lock the door for 3 mins
-        startLock = millis();
-      }
-
-      enterPassword(i);
-
-      if (openDoorCommand)
-      {
-        // openDoor();
-        playDoorOpenSound();
-
-        // Check if there are people before closing
-        PIR1 = digitalRead(PIR_PIN_1);
-        PIR2 = digitalRead(PIR_PIN_2);
-        if (!PIR1 && !PIR2)
-        {
-          // closeDoor();
-        }
-      }
-    }
-    // Chế độ bình thường
-    else
-    {
-      PIR1 = digitalRead(PIR_PIN_1);
-      PIR2 = digitalRead(PIR_PIN_2);
-
-      if (doorIsClosed)
-      {
-        if (PIR1 || PIR2)
-        {
-          // openDoor();
-          playDoorOpenSound();
-        }
-      }
-      else
-      {
-        if (!PIR1 && !PIR2)
-        {
-          // closeDoor();
-        }
-      }
-
-      doorIsClosed = !doorIsClosed;
-    }
-  }
-  else if (millis() - startLock >= 3000)
-  {
-    safetyLock = false;
-  }
-
-  // if (lightStat)
-  //   digitalWrite(led, HIGH);
-  // else
-  //   digitalWrite(led, LOW);
-  // playAlertSound();
-
-  // playDoorOpenSound();
-
-  // while (!status)
-  // {
-  //   myStepper.step(stepsPerRevolution);
-  // }
 }
 
 //  --------------- Wifi ---------------
@@ -240,28 +318,86 @@ void mqttConnect()
       Serial.println("connected");
 
       // Subscribe all necessary topics
-      mqttClient.subscribe("/12345/led");
+      mqttClient.subscribe(t_safetyMode);
+      mqttClient.subscribe(t_alwaysLightOn);
+      mqttClient.subscribe(t_doorPassword);
+      mqttClient.subscribe(t_openDoorWeb);
+      mqttClient.subscribe(t_alwaysOpen);
     }
     else
     {
-      Serial.println("try again in 5 seconds");
-      delay(5000);
+      Serial.println("try again in 3 seconds");
+      delay(3000);
     }
   }
+}
+
+void publishTopic(const char *topic, int message)
+{
+  char buffer[50];
+  sprintf(buffer, "%d", message);
+  mqttClient.publish(topic, buffer);
+}
+
+void publishTopic(const char *topic, String message)
+{
+  char buffer[50];
+  sprintf(buffer, "%s", message);
+  mqttClient.publish(topic, buffer);
 }
 
 // MQTT Receiver
 void callback(char *topic, byte *message, unsigned int length)
 {
-  Serial.println(topic);
   String strMsg;
-  for (int i = 0; i < length; i++)
+
+  if (String(topic) == String(t_doorPassword))
   {
-    strMsg += (char)message[i];
+    for (int k = 0; k < 4; k++)
+    {
+      doorPassword[k] = (char)message[k];
+      Serial.print(doorPassword[k]);
+    }
   }
-  Serial.println(strMsg);
+  else
+    for (int i = 0; i < length; i++)
+    {
+      strMsg += (char)message[i];
+    }
 
   //***Code here to process the received package***
+  if (String(topic) == String(t_safetyMode))
+  {
+    if (strMsg == "true")
+      safetyMode = true;
+    else
+      safetyMode = false;
+  }
+  // mqttClient.subscribe(t_alwaysOpen);
+  if (String(topic) == String(t_alwaysOpen)) {
+    if (strMsg == "true")
+      doorAlwaysOpen = true;
+    else
+      doorAlwaysOpen = false;
+  }
+
+  // mqttClient.subscribe(t_alwaysLightOn);
+  if (String(topic) == String(t_alwaysLightOn))
+  {
+    if (strMsg == "true")
+      lightAlwaysOn = true;
+    else
+      lightAlwaysOn = false;
+  }
+
+  // mqttClient.subscribe(t_openDoorWeb);
+  if (String(topic) == String(t_openDoorWeb))
+  {
+    if (strMsg == "true")
+      openDoorFromWeb = true;
+    else
+      openDoorFromWeb = false;
+  }
 }
 
 // --------------- Buzzer Sound ---------------
@@ -273,30 +409,37 @@ void playDoorOpenSound()
 
 void playAlertSound()
 {
-  for (int i = 0; i < 5; ++i)
-  {
-    tone(BUZZER_PIN, 700, 500);
-    noTone(BUZZER_PIN);
-    delay(500);
-  }
+  tone(BUZZER_PIN, 784, 500);
+  noTone(BUZZER_PIN);
+  delay(500);
+
+  tone(BUZZER_PIN, 784, 500);
+  noTone(BUZZER_PIN);
+  delay(500);
+
+  tone(BUZZER_PIN, 784, 500);
+  noTone(BUZZER_PIN);
+  delay(500);
 }
 
 // --------------- Numpad ---------------
 void enterPassword(int &i)
 {
-  lcd.backlight();
-  lcd.setCursor(0, 0);
-  lcd.print("Enter password: ");
-  lcd.setCursor(1, 0);
-
   char key = keypad.getKey();
   if (key)
   {
-    lcd.setCursor(6 + i, 1);
-    lcd.print("*");
-    enteredPass[i++] = key;
+    lcd.backlight();
+    lcd.setCursor(0, 0);
+    lcd.print("Enter password: ");
 
-    if (i == 4)
+    if (i >= 0)
+    {
+      lcd.setCursor(6 + i, 1);
+      lcd.print("*");
+      enteredPass[i] = key;
+    }
+
+    if (++i == 4)
       enterPassComplete = true;
   }
 
@@ -308,12 +451,13 @@ void enterPassword(int &i)
       lcd.clear();
       lcd.print("    Correct!");
       delay(2000);
+      lcd.noBacklight();
 
       // Open the door
-      openDoorCommand = true;
+      openDoorKeyPad = true;
+      numberOfIncorrect = 0;
       lcd.clear();
-      lcd.noBacklight();
-      i = 0;
+      i = -1;
     }
     else
     {
@@ -321,63 +465,57 @@ void enterPassword(int &i)
       lcd.print("   Incorrect!");
       delay(2000);
       lcd.clear();
-      i = 0;
+      lcd.noBacklight();
+      i = -1;
+      numberOfIncorrect++;
     }
+
     enterPassComplete = false;
   }
 }
 
-// // Led
-// void ledSetup(int pin)
-// {
-//   pinMode(pin, OUTPUT);
-// }
+// Door
+void openDoor()
+{
+  playDoorOpenSound();
+  while (true)
+  {
+    myStepper.step(stepsPerRevolution / 100);
 
-// void ledHigh(int pin)
-// {
-//   digitalWrite(pin, HIGH);
-// }
+    // Công tắc hành trình
+    if (ultraSonicDistance() <= 10)
+    {
+      doorIsClosed = false;
+      publishTopic(t_doorIsClosed, "OPENED");
+      break;
+    }
 
-// void ledLow(int pin)
-// {
-//   digitalWrite(pin, LOW);
-// }
+  }
+}
 
-// // Photoresister Sensor
-// void ldrSetup(int pin)
-// {
-//   pinMode(pin, INPUT);
-// }
+void closeDoor()
+{
+  while (true)
+  {
+    myStepper.step(-stepsPerRevolution / 100);
 
-// void ldrRead(int pin)
-// {
-//   analogRead(pin);
-// }
-// // Lcd I2C
-// LiquidCrystal_I2C lcd(0x27, 16, 2);
-// LiquidCrystal_I2C lcdSetUp()
-// {
-//   LiquidCrystal_I2C lcd(0x27, 16, 2);
-//   lcd.init();
-//   lcd.setCursor(0, 0);
-//   return lcd;
-// }
-// template <typename content>
-// void lcdPrint(LiquidCrystal_I2C lcd, int x, int y, content)
-// {
-//   lcd.setCursor(y, x);
-//   lcd.print(content);
-// }
-// // Flame sensor / dht
+    // Công tắc hành trình
+    if (ultraSonicDistance() >= 50) {
+      doorIsClosed = true;
+      publishTopic(t_doorIsClosed, "CLOSED");
+      break;
+    }
+  }
+}
 
-// DHT dht(pin, DHT11);
-// DHT dhtSetup(int pin)
-// {
-//   DHT dht(pin, DHT11);
-//   dht.begin();
-//   return dht;
-// }
-// float dhtRead(DHT dht)
-// {
-//   return dht.readTemperature();
-// }
+long ultraSonicDistance() {
+  digitalWrite(ULTRA_SONIC_TRIG, LOW);
+  delayMicroseconds(2);
+  digitalWrite(ULTRA_SONIC_TRIG, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(ULTRA_SONIC_TRIG, LOW);
+
+  long duration = pulseIn(ULTRA_SONIC_ECHO, HIGH);
+
+  return duration * 0.034 / 2;
+}
